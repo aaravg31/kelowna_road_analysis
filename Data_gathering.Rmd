@@ -1,0 +1,78 @@
+---
+title: "Data_gathering"
+author: "Aarav Gosalia 42576439"
+date: "2025-10-06"
+output: pdf_document
+---
+
+```{r}
+library(sf)
+
+# Define Kelowna bounding box in latitude/longitude
+kelowna_bbox <- st_bbox(c(
+  xmin = -119.682898,  # West
+  ymin = 49.774166,    # South
+  xmax = -119.319783,  # East
+  ymax = 49.974244     # North
+), crs = 4326)
+
+# Convert to BC Albers (EPSG:3005)
+kelowna_bbox_3005 <- st_transform(st_as_sfc(kelowna_bbox), 3005)
+st_bbox(kelowna_bbox_3005)
+
+# Extract numeric coordinates for query
+coords <- st_bbox(kelowna_bbox_3005)
+
+# Build WFS request with EPSG:3005 (the correct CRS)
+wfs_url <- paste0(
+  "https://openmaps.gov.bc.ca/geo/pub/WHSE_BASEMAPPING.DRA_DGTL_ROAD_ATLAS_MPAR_SP/ows?",
+  "service=WFS&version=2.0.0&request=GetFeature&",
+  "typename=pub:WHSE_BASEMAPPING.DRA_DGTL_ROAD_ATLAS_MPAR_SP&",
+  "srsName=EPSG:3005&",
+  "bbox=", coords["xmin"], ",", coords["ymin"], ",", coords["xmax"], ",", coords["ymax"], ",EPSG:3005"
+)
+
+# Read the layer
+roads_kelowna <- st_read(wfs_url)
+st_crs(roads_kelowna) <- 3005
+
+# Save locally
+dir.create("data_kelowna", showWarnings = FALSE)
+st_write(roads_kelowna, "data_kelowna/DRA_Kelowna_Subset.gpkg", delete_dsn = TRUE)
+```
+
+```{r}
+library(sf)
+library(tidyverse)
+
+# Read your saved shapefile
+roads <- st_read("data_kelowna/DRA_Kelowna_Subset.gpkg")
+
+# Quick look
+st_geometry_type(roads)
+names(roads)
+nrow(roads)
+
+# Quick plot
+roads_ll <- st_transform(roads, 4326)  # Convert to lat/lon (degrees)
+plot(st_geometry(roads_ll), col = "gray", main = "Kelowna Road Network (Geographic View)")
+```
+
+```{r}
+library(dplyr)
+library(knitr)
+
+# Drop geometry for attribute inspection
+road_attrs <- st_drop_geometry(roads)
+
+# Create a summary table of field names, data types, and examples
+attr_summary <- tibble(
+  Field_Name = names(road_attrs),
+  Data_Type = sapply(road_attrs, class),
+  Example_Value = sapply(road_attrs, function(x) as.character(x[which(!is.na(x))[1]]))
+)
+
+# Display neatly
+kable(attr_summary, caption = "Attributes in the Kelowna DRA Road Dataset (Sample Values)")
+```
+
