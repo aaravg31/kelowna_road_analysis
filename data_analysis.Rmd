@@ -1,0 +1,45 @@
+---
+title: "Data Analysis: Kelowna Road Network"
+author: "Aarav Gosalia 42576439"
+date: "2025-11-10"
+output: html_document
+---
+
+```{r}
+library(igraph)
+library(sf)
+library(stringr)
+library(purrr)
+
+nodes <- read_csv("data_kelowna/final_nodes.csv")
+
+# Convert geometry column "c(x, y)" into numeric matrix
+coords <- nodes$geometry %>%
+  str_remove_all("c\\(|\\)") %>%        # remove "c(" and ")"
+  str_split(",") %>%                    # split into x and y
+  map(as.numeric) %>%                   # convert to numeric
+  do.call(rbind, .)                     # bind rows
+
+nodes$x <- coords[,1]
+nodes$y <- coords[,2]
+
+edges <- read_csv("data_kelowna/final_edges.csv")
+
+g <- graph_from_data_frame(
+  d = edges %>% select(from, to, length_3d_m, slope),
+  vertices = nodes %>% mutate(node = node_id),
+  directed = FALSE
+)
+
+coords_mat <- as.matrix(nodes[, c("x", "y")])
+
+plot(
+  g,
+  layout = coords_mat,
+  vertex.size = 1,
+  vertex.label = NA,
+  edge.arrow.size = 0,
+  main = "Kelowna Road Network (DEM-covered Region)"
+)
+```
+

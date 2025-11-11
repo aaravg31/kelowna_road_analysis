@@ -1,0 +1,30 @@
+# macOS system files
+.DS_Store
+*/.DS_Store
+**/.DS_Store
+
+# R history and session files
+.Rhistory
+.RData
+.Rproj.user/
+
+# Git attribute file (ignored if you don't want to use it)
+.gitattributes
+
+# Ignore raster / DEM tiles (large .tif files)
+data_kelowna/tiles/*.tif
+
+# Ignore any tif files anywhere in repo (optional)
+*.tif
+
+# Ignore intermediary CSVs (optional)
+# data_kelowna/*.csv
+
+# Ignore Quarto / RMarkdown cache
+*_cache/
+cache/
+*.knit.md
+*.utf8.md
+
+# Ignore RStudio project files
+*.Rproj

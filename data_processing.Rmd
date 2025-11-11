@@ -1,0 +1,306 @@
+---
+title: "Data Cleaning: Road Network + LiDAR Integration"
+author: "Aarav Gosalia 42576439"
+date: "2025-11-04"
+output: html_document
+---
+
+# 1. Overview
+This document outlines the complete data-processing pipeline used to construct an elevation-aware road network for the City of Kelowna. The workflow integrates authoritative road centerline data from the BC Data Catalogue with LiDAR-derived elevation information to produce a 3D-enhanced graph representation suitable for network analysis, slope estimation, and 3D distance computation.
+
+The processing steps include:
+1. Importing and standardizing road geometry
+The raw road centerlines are downloaded via Web Feature Service (WFS) and transformed into a consistent projected coordinate system (BC Albers – EPSG:3005).
+
+2. Cleaning and preparing road segments
+Multiline geometries are normalized to simple LINESTRING objects, per-segment lengths are computed, and attributes such as road name, class, and lane count are extracted.
+
+3. Generating graph edges
+Each road segment is converted into an edge, preserving attributes and assigning unique IDs.
+
+4. Extracting graph nodes from segment endpoints
+Segment start and end coordinates are snapped, deduplicated, and indexed to form a consistent node table.
+
+5. Constructing and visualizing the 2D road network graph
+Nodes and edges are assembled into an undirected graph structure and plotted for verification.
+
+6. Loading and mosaicking LiDAR-derived DEM tiles
+Multiple DEM tiles (1 m resolution) are reprojected into BC Albers and mosaicked into a single elevation raster covering the available region.
+
+7. Extracting elevation for network nodes
+Only nodes falling inside the DEM extent receive elevation values; these form the basis for computing slope and 3D length.
+
+8. Filtering edges to DEM-covered areas and computing slope metrics
+Edges whose endpoints both lie within the DEM region are retained, joined with elevation values, and enriched with elevation difference, slope, and 3D geometric length.
+
+## 2. Setup
+```{r setup, message=FALSE, warning=FALSE}
+library(sf)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(tibble)
+library(igraph)
+library(terra)
+
+# Paths
+gpkg_path <- "data_kelowna/DRA_Kelowna_Subset.gpkg"
+out_dir   <- "data_kelowna"
+
+# Load roads
+roads_raw <- st_read(gpkg_path, quiet = TRUE)
+
+# Ensure projected CRS in meters (BC Albers)
+if (st_crs(roads_raw)$epsg != 3005) {
+  roads_raw <- st_transform(roads_raw, 3005)
+}
+
+# Normalize: cast to LINESTRING (explode MULTILINESTRING)
+roads <- roads_raw |> 
+  st_cast("LINESTRING", warn = FALSE) |>
+  st_make_valid()
+
+# Add a stable segment id
+roads <- roads |> mutate(seg_id = row_number())
+
+# Quick look
+print(st_crs(roads))
+nrow(roads)
+```
+
+# 3. Create Cleaned Edge Table
+
+We extract relevant road attributes and compute two versions of length:
+- FEATURE_LENGTH_M: length as stored in DRA
+- Computed (st_length): length measured from geometry
+```{r}
+# Create two length columns: official vs computed
+roads$length_feature_m <- roads$FEATURE_LENGTH_M # official DRA length
+roads$length_calc_m     <- as.numeric(st_length(st_geometry(roads))) # computed length
+
+#Clean attribute table
+edges <- roads %>%
+  mutate(
+    road_name = coalesce(
+      ROAD_NAME_FULL, ROAD_NAME_ALIAS1, ROAD_NAME_ALIAS2,
+      ROAD_NAME_ALIAS3, ROAD_NAME_ALIAS4
+    )
+  ) %>%
+  st_drop_geometry() %>%
+  select(
+    edge_id = DIGITAL_ROAD_ATLAS_LINE_ID,
+    road_name,
+    road_class   = ROAD_CLASS,
+    road_surface = ROAD_SURFACE,
+    lanes        = NUMBER_OF_LANES,
+    highway_rt   = HIGHWAY_ROUTE_NUMBER,
+    length_feature_m,
+    length_calc_m
+  )
+
+write_csv(edges, file.path(out_dir, "edges.csv"))
+```
+
+# 4. Extract Road Endpoints (Nodes)
+
+Road geometries are converted to node coordinates by extracting start and end points for each LINESTRING.
+
+```{r}
+# Extract coordinates for each vertex in each road line
+coords <- st_coordinates(roads)
+
+#Attach edge ID to each coordinate set (uses L1 indexing)
+coords_df <- cbind(coords, edge_id = roads$DIGITAL_ROAD_ATLAS_LINE_ID[coords[,"L1"]])
+
+# Compute endpoints for each road segment
+endpoints <- coords_df %>%
+  as_tibble() %>%
+  group_by(edge_id) %>%
+  summarize(
+    start_x = first(X),
+    start_y = first(Y),
+    end_x   = last(X),
+    end_y   = last(Y),
+    .groups = "drop"
+  )
+
+# Convert from wide to long format
+endpoints_long <- endpoints %>%
+  pivot_longer(
+    cols = c(start_x, start_y, end_x, end_y),
+    names_to = c("pos", ".value"),
+    names_pattern = "(start|end)_(x|y)"
+  )
+
+# Snap roads to grid and assign node IDs
+tol <- 0.5
+endpoints_long <- endpoints_long %>%
+  mutate(
+    x_r = round(x / tol) * tol,
+    y_r = round(y / tol) * tol,
+    node_key = paste0(x_r,"_",y_r)
+  )
+
+# Node table
+nodes <- endpoints_long %>%
+  distinct(node_key, x = x_r, y = y_r) %>%
+  arrange(node_key) %>%
+  mutate(node_id = row_number())
+
+# Associate endpoints with node IDs
+edge_nodes <- endpoints_long %>%
+  left_join(nodes, by = c("node_key","x_r" = "x","y_r" = "y")) %>%
+  select(edge_id, pos, node_id) %>%
+  pivot_wider(names_from = pos, values_from = node_id) %>%
+  rename(from = start, to = end)
+
+# Final edge table with from/to
+edges_with_nodes <- edges %>%
+  left_join(edge_nodes, by = "edge_id") %>%
+  filter(!is.na(from), !is.na(to))
+
+# Save outputs
+write_csv(nodes %>% select(node_id, x, y), file.path(out_dir, "nodes.csv"))
+write_csv(edges_with_nodes, file.path(out_dir, "edges_with_nodes.csv"))
+```
+
+# 5. Vizualize the Road Network and Graph
+
+```{r}
+nodes <- read_csv("data_kelowna/nodes.csv")
+edges_with_nodes <- read_csv("data_kelowna/edges_with_nodes.csv")
+roads <- st_read("data_kelowna/DRA_Kelowna_Subset.gpkg", quiet = TRUE)
+
+nodes_sf <- st_as_sf(nodes, coords = c("x", "y"), crs = st_crs(roads))
+
+# Plot Nodes + Roads
+plot(st_geometry(roads), col = "black", lwd = 0.6, main = "Kelowna Road Network")
+plot(st_geometry(nodes_sf), col = "maroon", pch = 20, cex = 0.3, add = TRUE)
+
+# Remove self-edges
+edges_clean <- edges_with_nodes %>% 
+  filter(from != to)
+
+# Build igraph object
+g <- graph_from_data_frame(
+  d = edges_clean %>% select(from, to),
+  vertices = nodes %>% mutate(node = node_id),
+  directed = FALSE
+)
+
+# Plot
+plot(
+  g,
+  vertex.size = 2,
+  vertex.color = "blue",
+  vertex.frame.color = NA,
+  vertex.label = NA,
+  edge.color = "black",
+  edge.width = 0.3,
+  edge.arrow.size = 0,
+  main = "Kelowna Road Network (Clean Graph View)"
+)
+```
+
+# 6. Load and Prepare DEM Tiles (LiDAR-derived elevation)
+
+This section loads all LiDAR DEM tiles, reprojects them to EPSG:3005, verifies the CRS of each, and mosaics (joins) tiles.
+
+```{r}
+dem_files <- list.files("data_kelowna/tiles/", pattern="\\.tif$", full.names=TRUE)
+
+# Load + Reproject each tile to BC Albers (EPSG:3005)
+dem_list <- lapply(dem_files, function(f) {
+  r <- rast(f)
+  project(r, "EPSG:3005", method="bilinear")
+})
+
+# Check CRS of all DEM tiles
+sapply(dem_list, crs)
+
+# Mosaic Tiles (Join)
+dem_3005 <- Reduce(function(x, y) mosaic(x, y, fun=mean), dem_list)
+```
+
+# 7. Extract Elevation for Road-Network Nodes
+This section integrates the road network and DEM by assigning elevation to each node inside DEM extent.
+
+```{r}
+# Check Spatial Overlap: Road Network vs DEM Coverage
+# We ensure extraction is valid and only process nodes inside DEM coverage.
+
+roads_bbox <- st_bbox(roads_raw)
+dem_bbox   <- as.vector(ext(dem_3005))
+
+roads_bbox
+dem_bbox
+
+plot(st_geometry(roads_raw), col="black", main="Roads vs DEM extent")
+plot(ext(dem_3005), add=TRUE, border="red", lwd=3)
+
+# Convert nodes to sf
+nodes_sf <- st_as_sf(nodes, coords = c("x", "y"), crs = st_crs(roads))
+
+# Detect which nodes fall inside the DEM
+xy <- st_coordinates(nodes_sf)
+cells <- terra::cellFromXY(dem_3005, xy)
+inside_idx <- which(!is.na(cells))
+
+#Extract node elevation
+nodes_inside <- nodes_sf[inside_idx, ]
+
+elev_vals <- terra::extract(dem_3005, vect(nodes_inside))[[1]]
+nodes_inside$elev_m <- elev_vals
+
+#Save final nodes csv
+write_csv(nodes_inside, "data_kelowna/final_nodes.csv")
+```
+
+# 8. Subset the Road Graph to DEM-covered Edges + Compute Slope
+
+```{r}
+valid_nodes <- nodes_inside$node_id
+
+# Filter edges to keep only those whose endpoints BOTH lie inside the DEM area
+edges_inside <- edges_with_nodes %>%
+  filter(from %in% valid_nodes & to %in% valid_nodes)
+
+# Join elevation values from nodes to edges
+edges_inside <- edges_inside %>%
+  # Add elevation of the start node
+  left_join(nodes_inside %>% select(node_id, elev_m),
+            by = c("from" = "node_id")) %>%
+  rename(elev_from = elev_m) %>%
+  
+  # Add elevation of the end node
+  left_join(nodes_inside %>% select(node_id, elev_m),
+            by = c("to" = "node_id")) %>%
+  rename(elev_to = elev_m) %>%
+  
+  # Compute slope and 3D geometric length
+  mutate(
+    # Elevation change between endpoints (positive = uphill)
+    elev_diff = elev_to - elev_from,
+    
+    # Slope = rise/run (unitless)
+    slope = elev_diff / length_calc_m,
+    
+    # 3D geometric length:
+    # Square root of (horizontal_length^2 + elevation_change^2)
+    length_3d_m = sqrt(length_calc_m^2 + elev_diff^2)
+  )
+
+# Save final edges csv
+write_csv(edges_inside, "data_kelowna/final_edges.csv")
+
+# Visualize slope distribution
+hist(
+  edges_inside$slope,
+  breaks = 50,
+  col = "orange",
+  border = "white",
+  main = "Slope Distribution of Road Segments with DEM Coverage",
+  xlab = "Slope (rise/run)"
+)
+
+```

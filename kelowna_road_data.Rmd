@@ -1,0 +1,90 @@
+---
+title: "Data Collection: Kelowna Road Network"
+author: "Aarav Gosalia 42576439"
+date: "2025-10-06"
+output: pdf_document
+---
+
+# 1. Introduction
+
+This section documents the collection of road network data for the Kelowna region using the Digital Road Atlas (DRA) published by the Government of British Columbia.
+The DRA is accessed through a WFS (Web Feature Service) endpoint, allowing programmatic extraction of road geometries within a specified bounding box.
+
+# 2. Load Required Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+library(sf)
+library(tidyverse)
+```
+
+# 3. Define Kelowna Bounding Box and Convert to BC Albers
+
+The WFS service requires the bounding box in the same projection as the dataset.  
+We begin with a latitude/longitude bounding box for the Kelowna area and convert it to **EPSG:3005 (NAD83 / BC Albers)**, which is the projection used by the DRA dataset.
+
+```{r}
+# Define Kelowna bounding box in latitude/longitude
+kelowna_bbox <- st_bbox(c(
+  xmin = -119.682898,  # West
+  ymin = 49.774166,    # South
+  xmax = -119.319783,  # East
+  ymax = 49.974244     # North
+), crs = 4326)
+
+# Convert to BC Albers (EPSG:3005)
+kelowna_bbox_3005 <- st_transform(st_as_sfc(kelowna_bbox), 3005)
+st_bbox(kelowna_bbox_3005)
+
+# Extract numeric coordinates for query
+coords <- st_bbox(kelowna_bbox_3005)
+```
+
+# 4. Download the Road Network via WFS
+
+We construct a WFS request URL containing:
+
+- dataset name  
+- projection (EPSG:3005)  
+- bounding box  
+- feature request parameters  
+
+The resulting layer is read directly into R as an `sf` object.
+
+```{r}
+# Build WFS request URL
+wfs_url <- paste0(
+  "https://openmaps.gov.bc.ca/geo/pub/WHSE_BASEMAPPING.DRA_DGTL_ROAD_ATLAS_MPAR_SP/ows?",
+  "service=WFS&version=2.0.0&request=GetFeature&",
+  "typename=pub:WHSE_BASEMAPPING.DRA_DGTL_ROAD_ATLAS_MPAR_SP&",
+  "srsName=EPSG:3005&",
+  "bbox=", coords["xmin"], ",", coords["ymin"], ",", coords["xmax"], ",", coords["ymax"], ",EPSG:3005"
+)
+
+# Read the layer from WFS
+roads_kelowna <- st_read(wfs_url)
+
+# Ensure CRS metadata is correct
+st_crs(roads_kelowna) <- 3005
+
+# # Create output directory & Save locally
+dir.create("data_kelowna", showWarnings = FALSE)
+st_write(roads_kelowna, "data_kelowna/DRA_Kelowna_Subset.gpkg", delete_dsn = TRUE)
+```
+
+# 5. Inspect the Downloaded Road Data
+
+This section loads the saved GeoPackage, inspects basic geometry types, field names, and the total number of road features.
+
+```{r}
+# Load saved GPKG
+roads <- st_read("data_kelowna/DRA_Kelowna_Subset.gpkg")
+
+# Basic inspections
+st_geometry_type(roads)
+names(roads)
+nrow(roads)
+
+# Quick visualization (lat/lon)
+roads_ll <- st_transform(roads, 4326)  # Convert to lat/lon (degrees)
+plot(st_geometry(roads_ll), col = "black", main = "Kelowna Road Network (Geographic View)")
+```
