@@ -4,12 +4,17 @@ author: "Aarav Gosalia 42576439"
 date: "2025-11-10"
 output: html_document
 ---
-
-```{r}
+## Setup
+```{r setup, message=FALSE, warning=FALSE}
 library(igraph)
 library(sf)
 library(stringr)
 library(purrr)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
 
 nodes <- read_csv("data_kelowna/final_nodes.csv")
 
@@ -24,22 +29,535 @@ nodes$x <- coords[,1]
 nodes$y <- coords[,2]
 
 edges <- read_csv("data_kelowna/final_edges.csv")
+edges_clean <- edges %>% select(from, to, road_name, road_class, length_calc_m, length_3d_m, slope)
+```
 
-g <- graph_from_data_frame(
-  d = edges %>% select(from, to, length_3d_m, slope),
-  vertices = nodes %>% mutate(node = node_id),
-  directed = FALSE
+# 1. Build Graphs (2D planar vs 3D terrain-aware)
+```{r}
+g_2d <- graph_from_data_frame(d = edges_clean,
+                              vertices = nodes %>% select(node_id = node_id, x, y),
+                              directed = FALSE)
+
+g_3d <- graph_from_data_frame(d = edges_clean,
+                              vertices = nodes %>% select(node_id = node_id, x, y),
+                              directed = FALSE)
+
+# Assign weights
+E(g_2d)$weight <- edges_clean$length_calc_m   # planar
+E(g_3d)$weight <- edges_clean$length_3d_m   # elevation-aware
+```
+
+
+# 2. Compute Node Centrality Measures
+```{r}
+# Calculates closeness, betwenees, and page rank centrality
+centrality_2d <- tibble(
+  node_id = V(g_2d)$name,
+  closeness_2d = closeness(g_2d, weights = E(g_2d)$weight, normalized = TRUE),
+  betweenness_2d = betweenness(g_2d, weights = E(g_2d)$weight, normalized = TRUE),
+  pagerank_2d = page_rank(g_2d, weights = 1/E(g_2d)$weight)$vector
 )
 
-coords_mat <- as.matrix(nodes[, c("x", "y")])
+centrality_3d <- tibble(
+  node_id = V(g_3d)$name,
+  closeness_3d = closeness(g_3d, weights = E(g_3d)$weight, normalized = TRUE),
+  betweenness_3d = betweenness(g_3d, weights = E(g_3d)$weight, normalized = TRUE),
+  pagerank_3d = page_rank(g_3d, weights = 1/E(g_3d)$weight)$vector
+)
+
+centrality_compare <- centrality_2d %>%
+  inner_join(centrality_3d, by = "node_id") %>%
+  mutate(node_id = as.numeric(node_id))
+
+# Add coordinates for visualization
+centrality_compare <- centrality_compare %>%
+  left_join(nodes %>% select(node_id, x, y), by = "node_id")
+
+centrality_compare <- centrality_compare %>%
+  mutate(
+    closeness_diff = closeness_3d - closeness_2d,
+    betweenness_diff = betweenness_3d - betweenness_2d,
+    pagerank_diff = pagerank_3d - pagerank_2d
+  )
+```
+
+# 3. Plotting Node Centrality Comparisons
+```{r}
+plot_top_nodes <- function(graph, top_nodes, title) {
+  coords <- data.frame(
+    x = V(graph)$x,
+    y = V(graph)$y,
+    id = V(graph)$name
+  )
+  top_coords <- coords %>% filter(id %in% top_nodes)
+  
+  plot(
+    graph,
+    layout = as.matrix(coords[, c("x", "y")]),
+    vertex.size = ifelse(V(graph)$name %in% top_nodes, 6, 2),
+    vertex.color = ifelse(V(graph)$name %in% top_nodes, "red", "grey70"),
+    vertex.frame.color = NA,
+    vertex.label = NA,
+    edge.color = "grey80",
+    edge.width = 0.3,
+    main = title
+  )
+}
+
+top5_closeness_2d <- centrality_2d %>% arrange(desc(closeness_2d)) %>% head(5) %>% pull(node_id)
+top5_closeness_3d <- centrality_3d %>% arrange(desc(closeness_3d)) %>% head(5) %>% pull(node_id)
+
+top5_betweenness_2d <- centrality_2d %>% arrange(desc(betweenness_2d)) %>% head(5) %>% pull(node_id)
+top5_betweenness_3d <- centrality_3d %>% arrange(desc(betweenness_3d)) %>% head(5) %>% pull(node_id)
+
+top5_pagerank_2d <- centrality_2d %>% arrange(desc(pagerank_2d)) %>% head(5) %>% pull(node_id)
+top5_pagerank_3d <- centrality_3d %>% arrange(desc(pagerank_3d)) %>% head(5) %>% pull(node_id)
+
+par(mfrow = c(1, 2))
+plot_top_nodes(g_2d, top5_closeness_2d, "Top 5 Closeness (2D)")
+plot_top_nodes(g_3d, top5_closeness_3d, "Top 5 Closeness (3D)")
+plot_top_nodes(g_2d, top5_betweenness_2d, "Top 5 Betweenness (2D)")
+plot_top_nodes(g_3d, top5_betweenness_3d, "Top 5 Betweenness (3D)")
+plot_top_nodes(g_2d, top5_pagerank_2d, "Top 5 PageRank (2D)")
+plot_top_nodes(g_3d, top5_pagerank_3d, "Top 5 PageRank (3D)")
+
+```
+
+```{r}
+plot_diff_map <- function(data, diff_col, title, limit_range = c(-0.05, 0.05)) {
+  ggplot(data, aes(x, y, color = !!sym(diff_col))) +
+    geom_point(size = 1.8, alpha = 0.9) +
+    scale_color_gradient2(
+      low = "#2166AC", mid = "white", high = "#B2182B",
+      midpoint = 0, limits = limit_range,
+      name = expression(Delta)
+    ) +
+    coord_equal() +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.background = element_rect(fill = "grey95", color = NA),
+      panel.grid = element_line(color = "white"),
+      plot.title = element_text(face = "bold", size = 13, hjust = 0.5),
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      legend.position = "right"
+    ) +
+    labs(title = title)
+}
+
+plot_diff_map(centrality_compare, "closeness_diff", "Δ Closeness (3D – 2D)", limit_range = c(-0.1, 0.1))
+plot_diff_map(centrality_compare, "betweenness_diff", "Δ Betweenness (3D – 2D)", limit_range = c(-0.05, 0.05))
+plot_diff_map(centrality_compare, "pagerank_diff", "Δ PageRank (3D – 2D)", limit_range = c(-0.001, 0.001))
+```
+
+# 4. Compute Edge Betweeness
+```{r}
+edge_bet_2d <- edge_betweenness(g_2d, weights = E(g_2d)$weight, directed = FALSE)
+edge_bet_3d <- edge_betweenness(g_3d, weights = E(g_3d)$weight, directed = FALSE)
+
+edges_with_bet <- edges %>%
+  mutate(
+    edge_bet_2d = edge_bet_2d,
+    edge_bet_3d = edge_bet_3d
+  )
+
+top5_edges_2d <- edges_with_bet %>%
+  arrange(desc(edge_bet_2d)) %>%
+  select(edge_id, road_name, road_class, length_calc_m, edge_bet_2d) %>%
+  head(10)
+
+top5_edges_3d <- edges_with_bet %>%
+  arrange(desc(edge_bet_3d)) %>%
+  select(edge_id, road_name, road_class, length_3d_m, edge_bet_3d) %>%
+  head(10)
+
+cat("🔹 Top 5 Edges by Edge Betweenness (2D):\n")
+print(top5_edges_2d)
+cat("\n🔹 Top 5 Edges by Edge Betweenness (3D):\n")
+print(top5_edges_3d)
+```
+
+# 5. Plotting Edge Betweeness
+```{r}
+plot_top_edges <- function(graph, edges_tbl, top_edges, title) {
+  edge_colors <- ifelse(E(graph)$name %in% top_edges, "red", "grey70")
+  edge_widths <- ifelse(E(graph)$name %in% top_edges, 2.5, 0.5)
+  
+  coords <- data.frame(
+    x = V(graph)$x,
+    y = V(graph)$y,
+    id = V(graph)$name
+  )
+  
+  plot(
+    graph,
+    layout = as.matrix(coords[, c("x", "y")]),
+    vertex.size = 0,
+    vertex.label = NA,
+    vertex.frame.color = NA,
+    edge.color = edge_colors,
+    edge.width = edge_widths,
+    main = title
+  )
+}
+
+# Create unique edge IDs for plotting reference
+E(g_2d)$name <- as.character(edges_with_bet$edge_id)
+E(g_3d)$name <- as.character(edges_with_bet$edge_id)
+
+# Extract top 5 edge IDs for each
+top5_edge_ids_2d <- as.character(top5_edges_2d$edge_id)
+top5_edge_ids_3d <- as.character(top5_edges_3d$edge_id)
+
+
+par(mfrow = c(1, 2), mar = c(1, 1, 3, 1))
+plot_top_edges(g_2d, edges_with_bet, top5_edge_ids_2d, "Top 5 Edge Betweenness (2D)")
+plot_top_edges(g_3d, edges_with_bet, top5_edge_ids_3d, "Top 5 Edge Betweenness (3D)")
+```
+
+```{r}
+bet_summary <- edges_with_bet %>%
+  group_by(road_class) %>%
+  summarise(
+    mean_bet_2d = mean(edge_bet_2d, na.rm = TRUE),
+    mean_bet_3d = mean(edge_bet_3d, na.rm = TRUE),
+    sum_bet_2d  = sum(edge_bet_2d, na.rm = TRUE),
+    sum_bet_3d  = sum(edge_bet_3d, na.rm = TRUE),
+    n_edges = n()
+  ) %>%
+  mutate(
+    mean_diff = mean_bet_3d - mean_bet_2d,
+    sum_diff  = sum_bet_3d - sum_bet_2d
+  )
+
+print(bet_summary)
+
+bet_summary_long <- bet_summary %>%
+  select(road_class, mean_bet_2d, mean_bet_3d) %>%
+  pivot_longer(cols = starts_with("mean_bet"),
+               names_to = "model", values_to = "total_bet") %>%
+  mutate(model = ifelse(model == "mean_bet_2d", "2D", "3D"))
+
+ggplot(bet_summary_long, aes(x = reorder(road_class, total_bet), y = total_bet, fill = model)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("2D" = "#80b1d3", "3D" = "#fb8072")) +
+  labs(
+    title = "Mean Edge Betweenness by Road Class (2D vs 3D)",
+    x = "Road Class", y = "Mean Betweenness",
+    fill = "Model"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+# 6. Community Detection
+```{r}
+# Inverse length weights
+E(g_2d)$inv_len <- 1 / E(g_2d)$length_calc_m
+E(g_3d)$inv_len <- 1 / E(g_3d)$length_3d_m
+
+comm_2d <- cluster_louvain(g_2d, weights = E(g_2d)$inv_len)
+comm_3d <- cluster_louvain(g_3d, weights = E(g_3d)$inv_len)
+
+V(g_2d)$community <- membership(comm_2d)
+V(g_3d)$community <- membership(comm_3d)
+
+num_comm_2d <- length(unique(V(g_2d)$community))
+num_comm_3d <- length(unique(V(g_3d)$community))
+
+cat("2D Louvain Modularity:", modularity(comm_2d), "\n")
+cat("3D Louvain Modularity:", modularity(comm_3d), "\n")
+cat("2D Communities:", num_comm_2d, "\n")
+cat("3D Communities:", num_comm_3d, "\n")
+
+coords_df <- data.frame(
+  x = coords[, 1],
+  y = coords[, 2],
+  comm_2d = V(g_2d)$community,
+  comm_3d = V(g_3d)$community
+) %>%
+  mutate(same_comm = comm_2d == comm_3d)
+
+cat("Percentage of nodes in same community (2D vs 3D):",
+    round(mean(coords_df$same_comm) * 100, 2), "%\n")
+```
+
+# 7. Plotting Community Detection
+```{r}
+set.seed(123)
+
+#palette_warm <- colorRampPalette(c("#FFDAB9", "#FF7F50", "#8B0000"))
+#palette_cool <- colorRampPalette(c("#B3E5FC", "#0288D1", "#311B92"))
+
+#colors_2d <- palette_warm(num_comm_2d)
+#colors_3d <- palette_warm(num_comm_3d)
+
+colors_2d <- grDevices::rainbow(num_comm_2d, s = 0.8, v = 0.9)
+colors_3d <- grDevices::rainbow(num_comm_3d, s = 0.8, v = 0.9)
+
+V(g_2d)$color <- colors_2d[V(g_2d)$community]
+V(g_3d)$color <- colors_3d[V(g_3d)$community]
+
+layout_coords <- as.matrix(data.frame(V(g_2d)$x, V(g_2d)$y))
+
+par(mfrow = c(1, 2), mar = c(0, 0, 3, 0))
 
 plot(
-  g,
-  layout = coords_mat,
-  vertex.size = 1,
+  g_2d,
+  layout = layout_coords,
+  vertex.size = 3,
   vertex.label = NA,
-  edge.arrow.size = 0,
-  main = "Kelowna Road Network (DEM-covered Region)"
+  edge.color = "grey80",
+  edge.width = 0.5,
+  main = "Louvain Communities (2D Graph)"
 )
+
+plot(
+  g_3d,
+  layout = layout_coords,
+  vertex.size = 3,
+  vertex.label = NA,
+  edge.color = "grey80",
+  edge.width = 0.5,
+  main = "Louvain Communities (3D Graph)"
+)
+```
+
+# 8. Resiliance Analysis
+```{r}
+# ---------- Utilities ----------
+# Global efficiency (handles disconnected graphs)
+global_efficiency <- function(g, weights = NULL) {
+  D <- distances(g, weights = weights)
+  D[is.infinite(D)] <- NA
+  invD <- 1 / D
+  diag(invD) <- NA
+  mean(invD, na.rm = TRUE)
+}
+
+largest_cc_frac <- function(g) {
+  cs <- components(g)
+  max(cs$csize) / vcount(g)
+}
+
+avg_path_length_LCC <- function(g, weights = NULL) {
+  cs <- components(g)
+  vids <- which(cs$membership == which.max(cs$csize))
+  if (length(vids) <= 1) return(NA_real_)
+  sub <- induced_subgraph(g, vids = vids)
+  mean_distance(sub, directed = FALSE, weights = weights)
+}
+
+# Remove top-k nodes by a score (static or adaptive)
+remove_topk_nodes <- function(g, scores, k, weights = NULL, adaptive = FALSE) {
+  g_cur <- g
+  rem_seq <- character(0)
+  for (i in seq_len(k)) {
+    if (adaptive && i > 1) {
+      # recompute score on current graph
+      if (scores$metric == "betweenness") {
+        sc <- betweenness(g_cur, weights = weights, normalized = TRUE)
+      } else if (scores$metric == "closeness") {
+        sc <- closeness(g_cur, weights = weights, normalized = TRUE)
+      } else if (scores$metric == "pagerank") {
+        sc <- page_rank(g_cur, weights = if (is.null(weights)) NULL else 1/weights)$vector
+      } else if (scores$metric == "degree") {
+        sc <- degree(g_cur)
+      } else stop("Unknown metric")
+      s_tbl <- tibble(node = V(g_cur)$name, score = sc)
+      target <- s_tbl %>% arrange(desc(score)) %>% slice(1) %>% pull(node)
+    } else {
+      # static: use initial sorting order
+      target <- setdiff(scores$node, rem_seq)[1]
+    }
+    g_cur <- delete_vertices(g_cur, target)
+    rem_seq <- c(rem_seq, target)
+  }
+  list(graph = g_cur, removed = rem_seq)
+}
+
+# Remove top-k edges by a score (static or adaptive)
+remove_topk_edges <- function(g, scores, k, weights = NULL, adaptive = FALSE) {
+  g_cur <- g
+  rem_seq <- integer(0)
+  for (i in seq_len(k)) {
+    if (adaptive && i > 1) {
+      sc <- edge_betweenness(g_cur, weights = weights, directed = FALSE)
+      e_tbl <- tibble(eid = seq_along(E(g_cur)), score = sc)
+      target_eid <- e_tbl %>% arrange(desc(score)) %>% slice(1) %>% pull(eid)
+    } else {
+      target_eid <- setdiff(scores$eid, rem_seq)[1]
+    }
+    g_cur <- delete_edges(g_cur, E(g_cur)[target_eid])
+    rem_seq <- c(rem_seq, target_eid)
+  }
+  list(graph = g_cur, removed = rem_seq)
+}
+
+# Bundle results for quick reporting
+summarize_graph <- function(g, weights = NULL, label = "") {
+  tibble(
+    label = label,
+    n = vcount(g),
+    m = ecount(g),
+    lcc_frac = largest_cc_frac(g),
+    eff = global_efficiency(g, weights = weights),
+    avg_path_LCC = avg_path_length_LCC(g, weights = weights)
+  )
+}
+```
+
+```{r}
+# --- Node centralities (static, baseline) ---
+node_scores_2d <- tibble(
+  node = V(g_2d)$name,
+  betweenness = betweenness(g_2d, weights = E(g_2d)$weight, normalized = TRUE),
+  closeness   = closeness(g_2d,  weights = E(g_2d)$weight, normalized = TRUE),
+  pagerank    = page_rank(g_2d,   weights = 1/E(g_2d)$weight)$vector,
+  degree      = degree(g_2d)
+)
+
+node_scores_3d <- tibble(
+  node = V(g_3d)$name,
+  betweenness = betweenness(g_3d, weights = E(g_3d)$weight, normalized = TRUE),
+  closeness   = closeness(g_3d,  weights = E(g_3d)$weight, normalized = TRUE),
+  pagerank    = page_rank(g_3d,   weights = 1/E(g_3d)$weight)$vector,
+  degree      = degree(g_3d)
+)
+
+# --- Edge betweenness (baseline) ---
+eb_2d <- edge_betweenness(g_2d, weights = E(g_2d)$weight, directed = FALSE)
+eb_3d <- edge_betweenness(g_3d, weights = E(g_3d)$weight, directed = FALSE)
+E(g_2d)$eb <- eb_2d
+E(g_3d)$eb <- eb_3d
+
+k_vals <- c(5, 10)
+metric <- "betweenness"   # change to "closeness" / "pagerank" / "degree"
+
+# Prepare sorted lists (static strategy)
+top_nodes_2d <- node_scores_2d %>% arrange(desc(.data[[metric]])) %>% transmute(node)
+top_nodes_3d <- node_scores_3d %>% arrange(desc(.data[[metric]])) %>% transmute(node)
+
+# Wrap with metric label so helper knows what to recompute if adaptive=TRUE
+scores2d <- list(node = top_nodes_2d$node, metric = metric)
+scores3d <- list(node = top_nodes_3d$node, metric = metric)
+
+res_nodes <- map_df(k_vals, function(k) {
+  # 2D
+  removed_2d <- remove_topk_nodes(g_2d, scores2d, k, adaptive = FALSE)$graph
+  s2d <- summarize_graph(removed_2d, label = paste0("2D - remove top ", k, " nodes (", metric, ")"))
+  # 3D
+  removed_3d <- remove_topk_nodes(g_3d, scores3d, k, adaptive = FALSE)$graph
+  s3d <- summarize_graph(removed_3d, label = paste0("3D - remove top ", k, " nodes (", metric, ")"))
+  bind_rows(s2d, s3d)
+})
+
+# Add baseline for comparison
+base_2d <- summarize_graph(g_2d, label = "2D - baseline")
+base_3d <- summarize_graph(g_3d, label = "3D - baseline")
+
+node_removal_summary <- bind_rows(base_2d, base_3d, res_nodes)
+node_removal_summary
+```
+
+```{r}
+order_eb_2d <- order(E(g_2d)$eb, decreasing = TRUE)
+order_eb_3d <- order(E(g_3d)$eb, decreasing = TRUE)
+
+scores_e2d <- list(eid = order_eb_2d)  # store edge indices
+scores_e3d <- list(eid = order_eb_3d)
+
+res_edges <- map_df(k_vals, function(k) {
+  # 2D
+  removed_2d <- remove_topk_edges(g_2d, scores_e2d, k, adaptive = FALSE)$graph
+  s2d <- summarize_graph(removed_2d, label = paste0("2D - remove top ", k, " edges (edge betw)"))
+  # 3D
+  removed_3d <- remove_topk_edges(g_3d, scores_e3d, k, adaptive = FALSE)$graph
+  s3d <- summarize_graph(removed_3d, label = paste0("3D - remove top ", k, " edges (edge betw)"))
+  bind_rows(s2d, s3d)
+})
+
+edge_removal_summary <- bind_rows(base_2d, base_3d, res_edges)
+edge_removal_summary
+```
+
+```{r}
+k_vals <- c(0, 5, 10, 15, 20)
+
+# --- Helper to remove top-k nodes by centrality ---
+remove_topk_nodes <- function(g, scores, k) {
+  remove_ids <- order(scores, decreasing = TRUE)[1:k]
+  g_removed <- delete_vertices(g, remove_ids)
+  return(g_removed)
+}
+
+# --- Helper to summarize avg path length (LCC only) ---
+avg_path_LCC <- function(g) {
+  comp <- components(g)
+  g_lcc <- induced_subgraph(g, which(comp$membership == which.max(comp$csize)))
+  mean_distance(g_lcc, directed = FALSE, weights = E(g_lcc)$weight)
+}
+
+# --- Node-based resilience (betweenness centrality) ---
+scores2d_node <- betweenness(g_2d, weights = E(g_2d)$weight)
+scores3d_node <- betweenness(g_3d, weights = E(g_3d)$weight)
+
+res_nodes <- map_df(k_vals, function(k) {
+  g2d_k <- remove_topk_nodes(g_2d, scores2d_node, k)
+  g3d_k <- remove_topk_nodes(g_3d, scores3d_node, k)
+  tibble(
+    k = k,
+    type = c("2D", "3D"),
+    avg_path = c(avg_path_LCC(g2d_k), avg_path_LCC(g3d_k))
+  )
+})
+
+# --- Helper to remove top-k edges ---
+remove_topk_edges <- function(g, scores, k) {
+  remove_ids <- order(scores, decreasing = TRUE)[1:k]
+  g_removed <- delete_edges(g, remove_ids)
+  return(g_removed)
+}
+
+# --- Edge-based resilience ---
+scores2d_edge <- edge_betweenness(g_2d, weights = E(g_2d)$weight)
+scores3d_edge <- edge_betweenness(g_3d, weights = E(g_3d)$weight)
+
+res_edges <- map_df(k_vals, function(k) {
+  g2d_k <- remove_topk_edges(g_2d, scores2d_edge, k)
+  g3d_k <- remove_topk_edges(g_3d, scores3d_edge, k)
+  tibble(
+    k = k,
+    type = c("2D", "3D"),
+    avg_path = c(avg_path_LCC(g2d_k), avg_path_LCC(g3d_k))
+  )
+})
+
+ggplot(res_nodes, aes(x = k, y = avg_path, color = type)) +
+  geom_line(size = 1.3) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("steelblue", "firebrick")) +
+  labs(
+    title = "Resilience of Network (Node Removal)",
+    subtitle = "Change in Average Path Length (LCC) after removing top-k central nodes",
+    x = "Number of nodes removed (k)",
+    y = "Average Path Length (LCC)",
+    color = "Graph Type"
+  ) +
+  theme_minimal(base_size = 14)
+
+ggplot(res_edges, aes(x = k, y = avg_path, color = type)) +
+  geom_line(size = 1.3) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("steelblue", "firebrick")) +
+  labs(
+    title = "Resilience of Network (Edge Removal)",
+    subtitle = "Change in Average Path Length (LCC) after removing top-k betweenness edges",
+    x = "Number of edges removed (k)",
+    y = "Average Path Length (LCC)",
+    color = "Graph Type"
+  ) +
+  theme_minimal(base_size = 14)
 ```
 
