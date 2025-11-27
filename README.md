@@ -1,18 +1,27 @@
-# 🌐 Kelowna Road Network as a Spatial Graph: Elevation-Aware Connectivity and Resilience Analysis
+# 🌐 Elevation-Aware Modeling of the Kelowna Road Network: A Spatial Graph Analysis
 
 This repository contains my final project for **COSC 521 – Network Science** at **UBC Okanagan**.  
 
-The goal is to build an **elevation‑aware road network** for the City of Kelowna by integrating the **BC Digital Road Atlas (DRA)** road centerlines with **LiDAR‑derived DEM** tiles, producing a **3D graph** for terrain‑aware analysis (slopes, elevation change, and 3D lengths).
-
 ---
 
-## 🎯 Project Overview  
-I construct a graph where **nodes** are road intersections (segment endpoints) and **edges** are road segments with attributes:
-- 2D length (from geometry and official DRA length)
-- Elevation at both endpoints (from DEM)
-- **Slope** and **3D geometric length** (rise/run + Pythagorean length)
+## 🎯 Project Overview
 
-This enables **terrain‑aware metrics** and prepares the pipeline for **elevation‑aware shortest paths** and **resilience** analysis.
+This project analyzes the Kelowna, BC road network as a **spatial graph**, comparing a traditional planar (2D) representation with an elevation-aware (3D) model derived from **LiDAR-based Digital Elevation Models (DEMs)**.  
+Using road centerlines from the **BC Digital Road Atlas (DRA)** and elevation extracted from **LiDAR BC**, the workflow constructs:
+
+- A **2D graph** weighted by geometric (planar) length  
+- A **3D graph** weighted by elevation-aware segment length  
+
+Both graphs share identical topology, allowing direct comparison of:
+
+- **Node centrality** (betweenness, PageRank, closeness)  
+- **Edge betweenness** and road-class flow patterns  
+- **Community structure** using Louvain detection  
+- **Network resilience** under targeted node/edge removal  
+
+The repository provides a full, reproducible pipeline from raw spatial data → processed node/edge tables → analytical results and figures used in the final report.
+
+The final report with further analysis and implementation details can be found at [/latex/Cosc521_ProjectReport.pdf](/latex/Cosc521_ProjectReport.pdf).
 
 ---
 
@@ -30,10 +39,16 @@ kelowna_road_analysis/
 │   ├── nodes.csv               # Node table before DEM filtering
 │   └── tiles/                  # (ignored) DEM tiles from LiDAR BC
 │
+├── latex/
+│   ├── svproc.cls              #LaTex format for Springer
+│   ├── refs.bib                # References used for report
+│   ├── final_report.tex        # Nodes with coordinates + elevation
+│   ├── Cosc521_ProjectReport.pdf  #Final Project Report
+│   └── plots/                  # Plots and Images used for report
+│
 ├── kelowna_road_data.Rmd       # Downloads road data via WFS + initial exploration
 ├── data_processing.Rmd         # Main pipeline: cleaning, graph nodes/edges, DEM mosaic, elevations, slope/3D length
-├── data_analysis.Rmd           # Analysis over the 3D graph (centrality, comparisons) – in progress
-├── Cosc521_final_report.pdf    # Final Report - in progress
+├── data_analysis.Rmd           # Analysis of 2D vs 3D for specifc network science metrics
 │
 ├── .gitignore                  # Ignores .DS_Store, .Rhistory, large .tif in tiles/, etc.
 └── README.md                   # Project documentation (this file)
@@ -59,8 +74,27 @@ kelowna_road_analysis/
   8) Filter to **DEM‑covered edges**, compute **elevation difference, slope, and 3D length**  
   Exports: `final_nodes.csv`, `final_edges.csv`
 
-- **`data_analysis.Rmd` — 3D network analysis (up next)**  
-  Will construct the 3D graph, visualize slope/elevation patterns, compare **2D vs 3D** distances, and compute centrality/resilience metrics.
+- **`data_analysis.Rmd` — Network analysis & visualization**  
+  Performs all graph-theoretic analysis using the processed node/edge tables.
+
+  **Includes:**
+  1) Load `final_nodes.csv` and `final_edges.csv` into `igraph`
+  2) Construct paired **2D** (planar length) and **3D** (elevation-aware) graphs  
+  3) Compute **node centrality**:
+    - Betweenness  
+    - PageRank  
+    - Closeness
+  4) Identify **top nodes/edges** in 2D vs 3D and map their spatial distribution  
+  5) Compute and visualize **2D → 3D centrality differences** (diff maps) 
+  6) Compute **edge betweenness** + join attributes (road class, name, length)
+  7) Calculate **mean edge betweenness by road class**  
+  8) Apply **Louvain community detection** to both models  
+  9) Run **resilience simulations**:
+    - Remove top-\(k\) nodes by betweenness  
+    - Remove top-\(k\) edges by edge betweenness  
+    - Track largest Connected Component(LCC) average path length
+
+> Plots are not saved automatically
 
 ---
 
@@ -74,7 +108,7 @@ kelowna_road_analysis/
 3. Run **`data_processing.Rmd`** to generate outputs:  
    - `data_kelowna/final_nodes.csv`  
    - `data_kelowna/final_edges.csv`  
-4. (Next) Run **`data_analysis.Rmd`** for the 3D analysis and plots.
+4. Run **`data_analysis.Rmd`** for all the analysis.
 
 > Coordinate system: **EPSG:3005 (NAD83 / BC Albers)** throughout the pipeline.
 
