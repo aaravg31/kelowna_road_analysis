@@ -1,0 +1,340 @@
+%%%%%%%%%%%%%%%%%%%% report_outline.tex %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Springer LNCS-style template for COSC 521 Final Report
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass{svproc}
+
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{float}
+\def\UrlFont{\rmfamily}
+
+\begin{document}
+\mainmatter
+
+\title{Elevation-Aware Modeling of the Kelowna Road Network: A Spatial Graph Analysis}
+
+\titlerunning{Kelowna Road Network Analysis}
+
+\author{Aarav Gosalia\inst{1}}
+\authorrunning{A. Gosalia}
+
+\tocauthor{Aarav Gosalia}
+
+\institute{University of British Columbia Okanagan, Canada \\
+\email{agosalia@student.ubc.ca}}
+
+\maketitle
+
+\begin{abstract}
+This report investigates the Kelowna, BC road network through a comparative analysis of planar (2D) and elevation-aware (3D) spatial graph models. Road centerlines from the BC Digital Road Atlas were combined with LiDAR-derived DEMs to assign elevation to network nodes and compute 3D edge lengths. These dual graph representations were assessed using node centrality, edge betweenness, Louvain community detection, and resilience simulations under targeted node and edge removal. Within the DEM-covered region, focused primarily on Kelowna’s flat urban core, the two models produced largely similar outcomes, with modest differences in betweenness-driven rankings and on steeper trail segments. These results reflect the limited topographic variability in the available dataset rather than the broader capabilities of elevation-aware modeling. The study presents a fully reproducible workflow for building terrain-informed road networks and highlights the value of extending this analysis to more complex hillside regions in future work.
+
+\keywords{spatial networks, LiDAR, Digital Elevation Models, elevation-aware graphs, centrality, community detection, network resilience}
+\end{abstract}
+
+% ------------------------------------------------------------
+\section{Introduction}
+
+Road networks are a core piece of urban infrastructure, shaping how people, goods, and services move through a city. Traditionally, road networks are modelled as graphs where intersections are nodes and road segments are edges, and where distances or nominal travel times serve as edge weights. While this approach is convenient and widely used in transportation and GIS applications, it overlooks how terrain, especially elevation and slope, can change the effective cost of travel along a route.
+
+In cities with complex topography, such as hillside or valley communities, ignoring elevation can misrepresent both accessibility and network vulnerability. Steep slopes may lengthen effective travel times, reduce walkability, or concentrate flows along a small number of more passable routes. Recent studies on ``surfacic networks" demonstrate that when road networks are embedded on real topographic surfaces rather than projected into 2D, the geometry of shortest paths and the spatial distribution of centrality measures can change significantly \cite{barthelemy2025surfacic}. This motivated a closer look at how terrain-aware road networks behave compared to their purely 2D counterparts.
+
+Kelowna, British Columbia, is one such city. Its road network spans lake-level corridors and hillside neighbourhoods, making elevation a salient part of everyday travel. In this project, I construct a spatial graph of Kelowna’s road network using the BC Digital Road Atlas and enrich it with elevation derived from LiDAR-based Digital Elevation Models. For each road segment, I compute both a planar (2D) length and an elevation-aware (3D) length and slope, allowing me to build and compare a conventional and a terrain-aware representation of the same network.
+
+The study is guided by the following research questions:
+\begin{enumerate}
+    \item Which intersections are most critical under (i) planar-length weights and (ii) elevation-aware weights, and how do centrality rankings change between these models?
+    \item To what extent do major road classes, such as highways and arterials, dominate overall network flow and connectivity once elevation and slope are incorporated?
+    \item How does the community structure of the Kelowna road network differ between the 2D and 3D graphs, and does elevation-aware weighting better delineate hillside versus valley-based neighbourhoods?
+    \item How resilient is the network to targeted disruptions, and does resilience differ between the 2D and 3D models?
+\end{enumerate}
+
+By addressing these questions, the paper aims to show how integrating elevation into road network analysis can provide a more realistic picture of travel costs and highlight terrain-sensitive vulnerabilities in urban connectivity.
+
+% ------------------------------------------------------------
+\section{Background}
+Airborne LiDAR has transformed how elevation is measured in complex landscapes. By emitting laser pulses from an aircraft and recording the return times of reflected signals, LiDAR instruments generate dense 3D point clouds that describe both surface objects and the underlying terrain. These data are particularly valuable in hilly or vegetated regions, where traditional ground surveys are difficult or incomplete, and have become a key input for road design, hazard mapping, and infrastructure planning \cite{hattaantah2021airbornelidarroads}.
+
+Digital Elevation Models (DEMs) convert this point cloud information into a raster grid where each cell stores an elevation value, typically representing the bare-earth terrain. LiDAR-derived DEMs provide fine spatial resolution and vertical accuracy, allowing the derivation of secondary terrain variables such as slope. When combined with road centerline data, DEMs can be used to sample elevation at road intersections and along segments, enabling estimation of longitudinal slope and 3D road geometry. Previous work has demonstrated how DEMs can support the estimation of road elevation and inclination, as well as the calculation of slope for each road segment in a network \cite{rua2023roadslopes}.
+
+Nevertheless, as mentioned before, the majority of road network analyses continue to rely on 2D graph models. This planar framework is standard in studies of active transportation, accessibility, and route choice. For instance, recent work in Kelowna constructs a 2D street network using OSMnx and NetworkX to map bicycle-share GPS data to likely paths and estimate bicycle volumes by street segment \cite{rafieenia2023aadb}.
+
+Therefore, in this paper, I adopt a DEM-based approach: starting from a conventional planar graph of the Kelowna road network, I incorporate elevation at intersections, compute 3D edge lengths, and construct an elevation-aware graph that can be directly compared to its 2D counterpart in terms of centrality and resilience.
+
+% ------------------------------------------------------------
+\section{Methodology}
+
+\subsection{Data Acquisition and Preparation}
+
+Road centerline data for the Kelowna region were obtained from the BC Digital Road Atlas (DRA), an authoritative provincial dataset that provides detailed road geometries and attributes for British Columbia \cite{DataBC_DRA}. A bounding box was first defined around the broader Kelowna area and reprojected to the BC Albers coordinate system (EPSG:3005) to ensure consistency with other provincial datasets. All road features intersecting this extent were downloaded through the DRA Web Feature Service and stored in a GeoPackage for reproducibility. From this data, key attributes like road class, surface type, and official DRA length were retained. A geometric length field was computed directly from the line geometries to ensure alignment with subsequent processing steps.
+
+To support network construction, segment endpoints were extracted from each polyline and snapped to a 0.5~m grid to minimize floating-point precision differences and merge vertices occupying the same physical location. These endpoints were then deduplicated to form a table of unique graph nodes, each associated with planar coordinates in EPSG:3005. The cleaned road centerlines and corresponding node set form the basis for the initial 2D network representation used throughout this study.
+
+Elevation data was sourced from the provincial LiDAR BC portal, which provides high-resolution LiDAR-derived elevation products across British Columbia \cite{LiDARBC}. All Digital Elevation Model (DEM) tiles intersecting the initial bounding box were downloaded, reprojected to EPSG:3005, and mosaicked into a single continuous surface. As seen in Figure~\ref{fig:road_dem_extent}, a spatial overlay revealed that DEM coverage existed only within a subset of the full road-network extent, corresponding primarily to the central Kelowna region and adjacent hillside residential 
+
+To assign elevation to nodes, only those lying within the DEM coverage region were retained, and their elevations were extracted using bilinear interpolation \cite{geeksforgeeks_bilinear} of the mosaicked DEM. Edges whose endpoints lacked elevation information were removed, ensuring that every retained edge had complete 2D and 3D geometric attributes. This resulted in a cleaned elevation-aware road network stored in \texttt{final\_nodes.csv} and \texttt{final\_edges.csv}. The node table contains a unique node identifier, planar coordinates, and elevation, while the edge table contains the identifiers of the connected nodes, 2D geometric length, elevation difference, segment slope, and 3D length.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.75\textwidth]{plots/roads_vs_dem_extent.png}
+    \caption{Comparison of the full road network extent (black) and the LiDAR DEM coverage region (red bounding box), showing the spatial subset used for elevation-aware network construction.}
+    \label{fig:road_dem_extent}
+\end{figure}
+
+\subsection{Network Construction: 2D and 3D Graph Models}
+
+Using the cleaned node and edge tables described above, two road-network graphs were constructed in \texttt{R} using the \texttt{igraph} package. The goal was to build a conventional 2D planar network and an elevation-aware 3D network that share the same topological structure but differ in how edge weights represent travel cost.
+
+In the 2D model, the graph follows the standard representation widely used in transportation and spatial network analysis: nodes correspond to road intersections or segment endpoints, and edges correspond to individual road segments connecting them. Each edge is assigned its geometric (planar) length in metres, computed directly from the original DRA line geometries. This produces a baseline graph in which all movement is assumed to occur on a flat surface, regardless of underlying terrain.
+
+The elevation-aware model extends this representation by incorporating DEM-derived attributes. Since each node in the cleaned dataset has an assigned elevation, the elevation difference between the endpoints of an edge is first computed. From this the 3D length of each segment is calculated using the Pythagorean relation between horizontal distance and vertical rise.
+
+\[
+L_{ij}^{3D} = \sqrt{ d_{ij}^{2} + (\Delta z_{ij})^{2} }.
+\]
+
+This 3D length serves as the edge weight for the terrain-aware graph, ensuring that steeper segments have a higher effective cost even if their horizontal footprint is short.
+
+Both graphs retain identical topology, meaning they share the same node set and edge connections, but differ in the weights assigned to those edges. This design allows direct comparison of centrality, connectivity, and resilience outcomes under purely planar versus elevation-adjusted assumptions. All subsequent analyses, including node centrality, edge betweeness, community detection, and targeted-removal resilience simulations, were performed using the \texttt{igraph} framework. This ensured a consistent computational environment for examining how elevation alters the structural importance of intersections and road segments within the Kelowna network.
+
+% ------------------------------------------------------------
+\section{Results}
+
+\subsection{Node Centrality Under 2D and 3D Weights}
+
+To address the first research question, node-level centrality measures were computed on both the planar (2D) and elevation-aware (3D) graphs using \texttt{igraph}. For each graph, betweenness, and PageRank centralities were calculated with edge weights given by 2D length and 3D length, respectively. The top five nodes by betweenness and PageRank were then mapped back to their spatial locations within the Kelowna network.
+
+Figures~\ref{fig:top5_bet_nodes} and \ref{fig:top5_pr_nodes} show the top five intersections by betweenness and PageRank in the 2D and 3D graphs.
+
+To visualize these shifts more systematically, difference maps were produced by subtracting 2D centrality scores from their 3D counterparts at each node (3D–2D). Shown in Figure~\ref{fig:betweeness_diff_map} and Figure~\ref{fig:pr_diff_map}
+
+\begin{figure}[H]
+    \centering
+    \resizebox{1\textwidth}{!}{
+        \begin{minipage}[t]{0.48\textwidth}
+            \centering
+            \includegraphics[width=\textwidth]{plots/top5_betweeness_2d.png}
+            \caption{2D Betweenness}
+        \end{minipage}
+        \hfill
+        \begin{minipage}[t]{0.48\textwidth}
+            \centering
+            \includegraphics[width=\textwidth]{plots/top5_betweeness_3d.png}
+            \caption{3D Betweenness}
+        \end{minipage}
+    }
+
+    \caption{Top five intersections by Betweenness centrality under 2D (left) and 3D (right) edge weights.}
+    \label{fig:top5_bet_nodes}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \resizebox{1\textwidth}{!}{
+        \begin{minipage}[t]{0.48\textwidth}
+            \centering
+            \includegraphics[width=\textwidth]{plots/top5_pr_2d.png}
+            \caption{2D PageRank}
+        \end{minipage}
+        \hfill
+        \begin{minipage}[t]{0.48\textwidth}
+            \centering
+            \includegraphics[width=\textwidth]{plots/top5_pr_3d.png}
+            \caption{3D PageRank}
+        \end{minipage}
+    }
+
+    \caption{Top five intersections by PageRank centrality under 2D (left) and 3D (right) edge weights.}
+    \label{fig:top5_pr_nodes}
+\end{figure}
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{plots/change_betweeness.png}
+    \caption{Change in Betweeness centrality between 3D and 2D graphs (3D–2D)}
+    \label{fig:betweeness_diff_map}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{plots/change_pr.png}
+    \caption{Change in PageRank centrality between 3D and 2D graphs (3D–2D)}
+    \label{fig:pr_diff_map}
+\end{figure}
+
+\subsection{Edge Betweenness and Road Classes}
+
+To understand how major road classes contribute to flow and connectivity, edge betweenness was computed on both graphs using the same 2D and 3D edge weights.
+
+Table~\ref{tab:top_edges} lists the top ten edges by edge betweenness in either model, together with their IDs, road names, 2D and 3D lengths, and their rank positions under 2D and 3D weights. Figure~\ref{fig:top10_pr_nodes} maps these edges onto the network
+
+\begin{table}[h]
+    \centering
+    \caption{Top ten edges by edge betweenness, with 2D/3D lengths and rank in each model.}
+    \label{tab:top_edges}
+    \begin{tabular}{r l l r r r r}
+        \hline
+        \textbf{Edge ID} & \textbf{Rd Name} & \textbf{Rd Class} &
+        \textbf{L$_{2D}$ (m)} & \textbf{L$_{3D}$ (m)} &
+        \textbf{Rank 2D} & \textbf{Rank 3D} \\
+        \hline
+        390740  & Gordon Dr      & arterial & 130.06 & - & 1  & - \\
+        377658  & Gordon Dr      & arterial & 393.67 & 394.13 & 2  & 1 \\
+        377657  & Gordon Dr      & arterial & 199.99 & 203.20 & 3  & 2 \\
+        2549886 & Gordon Dr      & arterial & 407.40 & 407.94 & 4  & 3 \\
+        55429   & Sutherland Ave & local    & 33.55  & 35.31 & 5  & 4 \\
+        2538508 & Harvey Ave     & arterial & 37.13  & 37.17 & 6  & 5 \\
+        55428   & Sutherland Ave & local    & 225.59 & 244.39 & 7  & 6 \\
+        2624016 & Harvey Ave     & arterial & 146.43 & 151.80 & 8  & 7 \\
+        405072  & Sutherland Ave & local    & 255.67 & 269.12 & 9  & 8 \\
+        405077  & Sutherland Ave & local    & - & 42.32 & - & 9 \\
+        390777  & Gordon Dr      & collector& 8.01   & 8.07 & 10 & 10 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+
+    \begin{minipage}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{plots/top10_edge_2d.png}
+        \caption{2D Edge Betweeness}
+    \end{minipage}
+    \hfill
+    \begin{minipage}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{plots/top10_edge_3d.png}
+        \caption{3D Edge Betweeness}
+    \end{minipage}
+
+    \caption{Top 10 roads by Edge Betweeness under 2D (left) and 3D (right) edge weights.}
+    \label{fig:top10_pr_nodes}
+\end{figure}
+
+Beyond individual segments, Figure~\ref{fig:mean_edge_bet_class} summarizes the mean edge betweenness by road class in the 2D and 3D graphs
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{plots/edge_betweeness_roadclass.png}
+    \caption{Mean edge betweenness by road class under 2D and 3D weighting.}
+    \label{fig:mean_edge_bet_class}
+\end{figure}
+
+\subsection{Community Structure and Topography}
+
+For research question~3, community detection was applied to both graphs using the Louvain algorithm with inverse length weights, so that shorter edges (in 2D or 3D) correspond to stronger ties. The resulting partitions yield 152 communities in both models, with very similar modularity scores (approximately 0.96 for both 2D and 3D).
+
+Figure~\ref{fig:communities_2d_3d} compares the Louvain communities for the 2D and 3D graphs using the same spatial layout.
+
+\begin{figure}[H]
+    \centering
+    \resizebox{0.9\textwidth}{!}{
+        \begin{minipage}[t]{0.48\textwidth}
+            \centering
+            \includegraphics[width=\textwidth]{plots/louvain_2d.png}
+            \caption{2D Louvain Communities}
+        \end{minipage}
+        \hfill
+        \begin{minipage}[t]{0.48\textwidth}
+            \centering
+            \includegraphics[width=\textwidth]{plots/louvain_3d.png}
+            \caption{3D Louvain Communities}
+        \end{minipage}
+    }
+
+    \caption{Louvain communities in the 2D (left) and 3D (right) graphs, using inverse-length weights.}
+    \label{fig:communities_2d_3d}
+\end{figure}
+
+\subsection{Network Resilience to Targeted Node and Edge Removal}
+
+Finally, research question~4 examines how resilient the Kelowna road network is to targeted disruptions in the 2D and 3D models. Resilience was evaluated by iteratively removing the top-\(k\) most central nodes or edges and tracking the average shortest-path length within the largest connected component (LCC). For node-based attacks, nodes were ranked by betweenness centrality; for edge-based attacks, edges were ranked by edge betweenness, with removal performed separately in the 2D and 3D graphs.
+
+Figure~\ref{fig:resilience_nodes} shows the change in average path length in the LCC as the top \(k \in \{0,5,10,15,20\}\) nodes are removed. Figure~\ref{fig:resilience_edges} presents the analogous results for edge removal.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{plots/resilience_nodes.png}
+    \caption{Change in average path length within the largest connected component after removing the top-\(k\) high-betweenness nodes, for 2D and 3D graphs.}
+    \label{fig:resilience_nodes}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{plots/resilience_edges.png}
+    \caption{Change in average path length within the largest connected component after removing the top-\(k\) high-betweenness edges, for 2D and 3D graphs.}
+    \label{fig:resilience_edges}
+\end{figure}
+
+% ------------------------------------------------------------
+\section{Discussion}
+
+This section interprets the empirical results with respect to the study’s four main research questions, emphasizing how elevation-aware weighting altered, and often did not alter, the structural properties of the Kelowna road network.
+
+\subsection*{Node-Level Centrality Under 2D and 3D Weights (RQ1)}
+
+The top intersections identified through betweenness centrality show notable differences between the 2D and 3D models. As illustrated in figures~\ref{fig:top5_bet_nodes} and~\ref{fig:betweeness_diff_map}, the betweenness intersections contains noticeable changes in ordering and composition between the two weighting schemes. Betweenness, which counts how often a node lies on shortest paths, is more sensitive to changes in effective edge cost; substituting 3D length for planar 2D length can reroute shortest paths away from steeper or elevation-intensive segments.
+
+By contrast, the PageRank intersections remain unchanged across both models. PageRank depends primarily on degree structure and the distribution of incoming weight rather than absolute path geometry. Because the overall topology of edges is preserved when transitioning from 2D to 3D weights, PageRank remains stable. This is further supported by figures~\ref{fig:top5_pr_nodes} and~\ref{fig:pr_diff_map}. These results suggest that elevation affects shortest-path structure far more than it affects global influence.
+
+\subsection*{Edge Betweenness and Road Class Patterns (RQ2)}
+
+The top ten edges by edge betweenness show strong consistency between the 2D and 3D models (Table~\ref{tab:top_edges} and Figure~\ref{fig:top10_pr_nodes}). For most segments, the 2D and 3D lengths differ only slightly, owing to the relatively flat DEM-covered region. Consequently, the highest-betweenness edges, primarily arterial segments along Gordon Drive, Harvey Avenue, and Sutherland Avenue, maintain nearly identical positions in both rankings. This reinforces that, within the central Kelowna subregion, elevation makes only marginal adjustments to path choice.
+
+Mean edge betweenness by road class (Figure~\ref{fig:mean_edge_bet_class}) further highlights the similarity between weighting schemes. Arterials retain the highest average betweenness in both models, while collectors and locals remain substantially lower. The most pronounced difference appears in trails, whose mean betweenness decreases sharply under 3D weighting. This likely reflects the fact that several trail segments are steep and become significantly more expensive under 3D length, causing shortest paths to avoid them. In the 2D model, these same segments may have been used more often simply because their flat planar geometry understated their true traversal cost. This contrast illustrates how 3D weighting can suppress unrealistic shortcuts, especially on steep pedestrian or multi-use paths.
+
+\subsection*{Community Structure and Topographic Coherence (RQ3)}
+
+The Louvain community detection results reveal almost no difference between the 2D and 3D graphs (Figure~\ref{fig:communities_2d_3d}). Both models produce the same number of communities (152) and nearly identical modularity values (approximately 0.96). At first glance, this suggests that incorporating elevation does not materially alter the meso-scale structure of the network.
+
+A deeper interpretation, however, connects this outcome to the geographic extent of the study area. While small pockets of hillside segments exist within the DEM coverage, the majority of nodes lie within Kelowna’s flat urban core. Because Louvain relies on dense internal connectivity rather than global shortest-path behavior, the addition of 3D edge costs provides little incentive for the algorithm to reshape community boundaries. In essence, topography did not play a sufficiently strong structural role within the truncated study region.
+
+\subsection*{Network Resilience to Targeted Node and Edge Removal (RQ4)}
+
+The resilience experiments also show similar behavior across 2D and 3D graphs. As seen in Figures~\ref{fig:resilience_nodes} and~\ref{fig:resilience_edges}, removing the top-$k$ most central nodes or edges (with $k \in \{0, 5, 10, 15, 20\}$) leads to broadly comparable increases in average path length in the largest connected component for both weighting schemes. The curves rise steeply once the highest-betweenness elements are removed, reflecting some vulnerability of the central arterial spine that anchors travel within the study area.
+
+Because the same arterial intersections and segments dominate centrality under both 2D and 3D weighting, the system’s vulnerability profile is essentially unchanged. This further supports the earlier finding that, within the relatively flat DEM-covered region, elevation adjustments do not meaningfully shift which elements are critical for maintaining global connectivity.
+
+\subsection{Limitations}
+
+A key limitation of this analysis is the restricted geographic extent of the available LiDAR DEM tiles. DEM coverage was only present in central Kelowna, a region that is comparatively flat relative to the surrounding hillside neighbourhoods. Consequently, the elevation-aware model could not be applied to large portions of the network where slope effects would likely have been more pronounced. This constraint narrows the scope of the results: many of the differences between 2D and 3D weighting that might emerge in more topographically complex areas, such as the Upper Mission, Dilworth, or McKinley regions, could not be evaluated.
+
+Additionally, the truncated network no longer represents the connectivity patterns of the full Kelowna road system. The reduced study area not only limits generalizability but also affects metrics such as betweenness, which are sensitive to global network configuration. In a more complete dataset, hillside segments with substantial elevation change may have shifted centrality rankings, altered community boundaries, and produced more substantial differences in resilience analysis.
+
+Finally, the edge-weighting approach relies solely on geometric 3D length, which captures slope but does not consider other elevation-related travel impedances such as grade restrictions or vehicle performance. Incorporating such factors could further differentiate the 3D model, especially in areas with steep gradients.
+
+% ------------------------------------------------------------
+\section{Conclusion}
+
+This study constructed and analyzed both planar and elevation-aware representations of the Kelowna road network using road centerlines from the BC Digital Road Atlas and LiDAR-derived DEM data. By computing 2D and 3D edge lengths, assigning elevation to nodes, and evaluating a suite of graph-based metrics, the analysis compared how topography influences centrality, community structure, and resilience to targeted disruptions.
+
+Across most measures, the 2D and 3D models produced broadly similar results. Betweenness centrality exhibited noticeable shifts for a small number of intersections and road segments, particularly near areas with modest grade changes, whereas PageRank values remained stable due to the preserved topological structure of the network. Edge betweenness patterns and class-level summaries likewise showed only small differences between models, with the largest change occurring on steep trail segments whose traversal cost increases substantially when slope is incorporated. Community detection and resilience analysis also revealed minimal differences across the two weighting schemes.
+
+While these findings indicate that elevation-aware modeling produced only limited changes in this case, this outcome reflects the nature of the available DEM coverage rather than a limitation of the method itself. The central Kelowna subregion captured by the LiDAR data is comparatively flat, reducing the influence that topography can exert on shortest paths, modular structure, and network vulnerability. In areas with stronger elevation gradients, the 3D model has the potential to reshape routing patterns, highlight terrain-sensitive bottlenecks, and more accurately capture the cost of movement.
+
+Future work will extend this analysis to neighbourhoods with more substantial topographic variation, such as the Upper Mission, Dilworth Mountain, and McKinley regions, where elevation-aware modeling is likely to play a more decisive role. Incorporating additional impedance factors, such as grade restrictions, travel mode, or seasonal accessibility, also represents a promising direction for refining the representation of road networks. Overall, while differences between the 2D and 3D models were modest within the limited DEM-covered portion of Kelowna, the results suggest that elevation-aware approaches remain a valuable tool for understanding urban connectivity in topographically complex environments.
+
+% ------------------------------------------------------------
+\section*{Acknowledgments}
+
+I would like to acknowledge the support of OpenAI's ChatGPT. It helped refine the structure and design of the analysis code, and contributed to the overall grammar, organization, and formatting of this report. All analytical decisions, interpretations, and conclusions, however, are my own.
+
+% ------------------------------------------------------------
+\bibliographystyle{plain}
+\bibliography{refs}
+
+% ------------------------------------------------------------
+\appendix
+\section{Appendix}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{plots/slope_distribution.png}
+    \caption{Distribution of slope values (rise/run) across all edges in the elevation-aware (3D) road network.}
+    \label{fig:slope_distribution}
+\end{figure}
+
+\end{document}

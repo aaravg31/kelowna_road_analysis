@@ -1,8 +1,10 @@
 ---
-title: "Data Analysis: Kelowna Road Network"
+title: 'Data Analysis: Kelowna Road Network'
 author: "Aarav Gosalia 42576439"
 date: "2025-11-10"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 ## Setup
 ```{r setup, message=FALSE, warning=FALSE}
@@ -122,13 +124,13 @@ plot_top_nodes(g_2d, top5_pagerank_2d, "Top 5 PageRank (2D)")
 plot_top_nodes(g_3d, top5_pagerank_3d, "Top 5 PageRank (3D)")
 
 ```
-
+## Difference Maps (3D-2D)
 ```{r}
 plot_diff_map <- function(data, diff_col, title, limit_range = c(-0.05, 0.05)) {
   ggplot(data, aes(x, y, color = !!sym(diff_col))) +
     geom_point(size = 1.8, alpha = 0.9) +
     scale_color_gradient2(
-      low = "#2166AC", mid = "white", high = "#B2182B",
+      low = "royalblue", mid = "white", high = "firebrick",
       midpoint = 0, limits = limit_range,
       name = expression(Delta)
     ) +
@@ -146,9 +148,9 @@ plot_diff_map <- function(data, diff_col, title, limit_range = c(-0.05, 0.05)) {
     labs(title = title)
 }
 
-plot_diff_map(centrality_compare, "closeness_diff", "Δ Closeness (3D – 2D)", limit_range = c(-0.1, 0.1))
-plot_diff_map(centrality_compare, "betweenness_diff", "Δ Betweenness (3D – 2D)", limit_range = c(-0.05, 0.05))
-plot_diff_map(centrality_compare, "pagerank_diff", "Δ PageRank (3D – 2D)", limit_range = c(-0.001, 0.001))
+plot_diff_map(centrality_compare, "closeness_diff", "Change in Closeness (3D – 2D)", limit_range = c(-0.1, 0.1))
+plot_diff_map(centrality_compare, "betweenness_diff", "Change in Betweenness (3D – 2D)", limit_range = c(-0.05, 0.05))
+plot_diff_map(centrality_compare, "pagerank_diff", "Change in PageRank (3D – 2D)", limit_range = c(-0.001, 0.001))
 ```
 
 # 4. Compute Edge Betweeness
@@ -172,9 +174,9 @@ top5_edges_3d <- edges_with_bet %>%
   select(edge_id, road_name, road_class, length_3d_m, edge_bet_3d) %>%
   head(10)
 
-cat("🔹 Top 5 Edges by Edge Betweenness (2D):\n")
+cat("Top Edges by Edge Betweenness (2D):\n")
 print(top5_edges_2d)
-cat("\n🔹 Top 5 Edges by Edge Betweenness (3D):\n")
+cat("\nTop Edges by Edge Betweenness (3D):\n")
 print(top5_edges_3d)
 ```
 
@@ -206,16 +208,16 @@ plot_top_edges <- function(graph, edges_tbl, top_edges, title) {
 E(g_2d)$name <- as.character(edges_with_bet$edge_id)
 E(g_3d)$name <- as.character(edges_with_bet$edge_id)
 
-# Extract top 5 edge IDs for each
+# Extract top 10 edge IDs for each
 top5_edge_ids_2d <- as.character(top5_edges_2d$edge_id)
 top5_edge_ids_3d <- as.character(top5_edges_3d$edge_id)
 
 
 par(mfrow = c(1, 2), mar = c(1, 1, 3, 1))
-plot_top_edges(g_2d, edges_with_bet, top5_edge_ids_2d, "Top 5 Edge Betweenness (2D)")
-plot_top_edges(g_3d, edges_with_bet, top5_edge_ids_3d, "Top 5 Edge Betweenness (3D)")
+plot_top_edges(g_2d, edges_with_bet, top5_edge_ids_2d, "Top 10 Edge Betweenness (2D)")
+plot_top_edges(g_3d, edges_with_bet, top5_edge_ids_3d, "Top 10 Edge Betweenness (3D)")
 ```
-
+## Mean Edge Betweeness by Road Class
 ```{r}
 bet_summary <- edges_with_bet %>%
   group_by(road_class) %>%
@@ -242,13 +244,14 @@ bet_summary_long <- bet_summary %>%
 ggplot(bet_summary_long, aes(x = reorder(road_class, total_bet), y = total_bet, fill = model)) +
   geom_col(position = "dodge") +
   coord_flip() +
-  scale_fill_manual(values = c("2D" = "#80b1d3", "3D" = "#fb8072")) +
+  scale_fill_manual(values = c("2D" = "wheat1", "3D" = "slateblue2")) +
   labs(
     title = "Mean Edge Betweenness by Road Class (2D vs 3D)",
     x = "Road Class", y = "Mean Betweenness",
     fill = "Model"
   ) +
-  theme_minimal(base_size = 13)
+  theme_minimal(base_size = 13) +
+  theme(panel.grid = element_blank())
 ```
 
 # 6. Community Detection
@@ -324,7 +327,7 @@ plot(
 )
 ```
 
-# 8. Resiliance Analysis
+# 8. Resiliance Analysis - Average Path length for Largest Connected Component after removing top k nodes and edges
 ```{r}
 # ---------- Utilities ----------
 # Global efficiency (handles disconnected graphs)
@@ -482,6 +485,7 @@ edge_removal_summary <- bind_rows(base_2d, base_3d, res_edges)
 edge_removal_summary
 ```
 
+# 9. Plotting Resiliance Analysis - Average Path length for Largest Connected Component after removing top k nodes and edges
 ```{r}
 k_vals <- c(0, 5, 10, 15, 20)
 
@@ -537,7 +541,7 @@ res_edges <- map_df(k_vals, function(k) {
 ggplot(res_nodes, aes(x = k, y = avg_path, color = type)) +
   geom_line(size = 1.3) +
   geom_point(size = 3) +
-  scale_color_manual(values = c("steelblue", "firebrick")) +
+  scale_color_manual(values = c("royalblue", "firebrick")) +
   labs(
     title = "Resilience of Network (Node Removal)",
     subtitle = "Change in Average Path Length (LCC) after removing top-k central nodes",
@@ -550,7 +554,7 @@ ggplot(res_nodes, aes(x = k, y = avg_path, color = type)) +
 ggplot(res_edges, aes(x = k, y = avg_path, color = type)) +
   geom_line(size = 1.3) +
   geom_point(size = 3) +
-  scale_color_manual(values = c("steelblue", "firebrick")) +
+  scale_color_manual(values = c("royalblue", "firebrick")) +
   labs(
     title = "Resilience of Network (Edge Removal)",
     subtitle = "Change in Average Path Length (LCC) after removing top-k betweenness edges",
