@@ -95,6 +95,7 @@ kelowna_road_analysis/
     - Track largest Connected Component(LCC) average path length
 
 > Plots are not saved automatically
+> Coordinate system: **EPSG:3005 (NAD83 / BC Albers)** throughout the pipeline.
 
 ---
 
@@ -104,13 +105,26 @@ kelowna_road_analysis/
    ```r
    install.packages(c("sf","tidyverse","dplyr","readr","tidyr","tibble","igraph","terra","ggplot2"))
    ```
-2. Run **`kelowna_road_data.Rmd`** to download roads (creates `data_kelowna/DRA_Kelowna_Subset.gpkg`).  
-3. Run **`data_processing.Rmd`** to generate outputs:  
+2. Run **`kelowna_road_data.Rmd`** to download roads (creates `data_kelowna/DRA_Kelowna_Subset.gpkg`).
+3. Download LiDAR DEM Tiles
+   - Visit the LiDAR BC Portal: **https://lidar.gov.bc.ca**
+   - Click **“Access Data”** → navigate to the **Kelowna** region  
+   - Download the following **20 DEM tiles** (1 m resolution), named like:  
+     `bc_082e083_3_2_1_xl1m_utm11_170607.tif`  
+   - Required tile index ranges:  
+     - `3_2_1` → `3_2_4`  
+     - `3_4_1` → `3_4_4`  
+     - `4_1_1` → `4_1_4`  
+     - `4_2_1` → `4_2_4`  
+     - `4_3_1` → `4_3_4`  
+   - Place all `.tif` files inside:  
+     ```
+     data_kelowna/tiles/
+     ```
+4. Run **`data_processing.Rmd`** to generate outputs:  
    - `data_kelowna/final_nodes.csv`  
    - `data_kelowna/final_edges.csv`  
-4. Run **`data_analysis.Rmd`** for all the analysis.
-
-> Coordinate system: **EPSG:3005 (NAD83 / BC Albers)** throughout the pipeline.
+5. Run **`data_analysis.Rmd`** for all the analysis.
 
 ---
 
